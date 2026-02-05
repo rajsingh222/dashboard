@@ -124,6 +124,29 @@ if (process.env.NODE_ENV === 'production') {
   }));
 }
 
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Dashboard SPPL Backend API',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      auth: '/api/auth',
+      projects: '/api/projects',
+      sensors: '/api/sensors',
+      admin: '/api/admin',
+      alerts: '/api/alerts',
+      panelConfig: '/api/panel-config',
+      panelReports: '/api/panel-reports',
+      finalReport: '/api/final-report',
+      projectDetails: '/api/project-details',
+      mediaAssets: '/api/media-assets'
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.status(200).json({
