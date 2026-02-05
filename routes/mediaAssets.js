@@ -1,59 +1,53 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import Project from '../models/Project.js';
 import { protect } from '../middleware/auth.js';
+import { 
+  sensorLayoutStorage, 
+  modeShapeStorage,
+  deleteFromCloudinary,
+  extractPublicId
+} from '../config/cloudinary.js';
 
 const router = express.Router();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads/media');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+// Configure multer for sensor layout uploads (using Cloudinary)
+const sensorLayoutUpload = multer({
+  storage: sensorLayoutStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit for images
   fileFilter: (req, file, cb) => {
     console.log('File filter - Field:', file.fieldname, 'Name:', file.originalname);
     const allowedImageTypes = /jpeg|jpg|png|gif/;
+    const extname = path.extname(file.originalname).toLowerCase();
+    
+    if (allowedImageTypes.test(extname.replace('.', ''))) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed for sensor layout!'));
+    }
+  }
+});
+
+// Configure multer for mode shape video uploads (using Cloudinary)
+const modeShapeUpload = multer({
+  storage: modeShapeStorage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit for videos
+  fileFilter: (req, file, cb) => {
+    console.log('File filter - Field:', file.fieldname, 'Name:', file.originalname);
     const allowedVideoTypes = /mp4|avi|mov|wmv|webm/;
     const extname = path.extname(file.originalname).toLowerCase();
     
-    if (file.fieldname === 'sensorLayout') {
-      if (allowedImageTypes.test(extname.replace('.', ''))) {
-        cb(null, true);
-      } else {
-        cb(new Error('Only image files are allowed for sensor layout!'));
-      }
-    } else if (file.fieldname === 'modeShapeVideo') {
-      if (allowedVideoTypes.test(extname.replace('.', ''))) {
-        cb(null, true);
-      } else {
-        cb(new Error('Only video files are allowed for mode shapes!'));
-      }
-    } else {
+    if (allowedVideoTypes.test(extname.replace('.', ''))) {
       cb(null, true);
+    } else {
+      cb(new Error('Only video files are allowed for mode shapes!'));
     }
   }
 });
 
 // Upload sensor layout image
-router.post('/upload/sensor-layout/:projectId', protect, upload.single('sensorLayout'), async (req, res) => {
+router.post('/upload/sensor-layout/:projectId', protect, sensorLayoutUpload.single('sensorLayout'), async (req, res) => {
   try {
     console.log('=== UPLOAD SENSOR LAYOUT REQUEST ===');
     console.log('Project ID:', req.params.projectId);
@@ -71,8 +65,11 @@ router.post('/upload/sensor-layout/:projectId', protect, upload.single('sensorLa
     const project = await Project.findById(req.params.projectId);
     if (!project) {
       console.log('ERROR: Project not found:', req.params.projectId);
-      // Delete uploaded file if project not found
-      fs.unlinkSync(req.file.path);
+      // Delete uploaded file from Cloudinary if project not found
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'image');
+      }
       return res.status(404).json({
         success: false,
         message: 'Project not found'
@@ -81,19 +78,20 @@ router.post('/upload/sensor-layout/:projectId', protect, upload.single('sensorLa
 
     console.log('Project found:', project.projectName);
 
-    // Delete old sensor layout image if exists
+    // Delete old sensor layout image from Cloudinary if exists
     if (project.sensorLayoutImage && project.sensorLayoutImage.filePath) {
-      const oldFilePath = path.join(__dirname, '..', project.sensorLayoutImage.filePath);
-      if (fs.existsSync(oldFilePath)) {
-        fs.unlinkSync(oldFilePath);
+      const publicId = extractPublicId(project.sensorLayoutImage.filePath);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'image');
       }
     }
 
-    const filePath = `/uploads/media/${req.file.filename}`;
+    // Cloudinary URL is in req.file.path
+    const filePath = req.file.path;
     
     project.sensorLayoutImage = {
       fileName: req.file.originalname,
-      filePath: filePath,
+      filePath: filePath, // This is now a Cloudinary URL
       uploadDate: new Date(),
       uploadedBy: req.user.email
     };
@@ -113,8 +111,11 @@ router.post('/upload/sensor-layout/:projectId', protect, upload.single('sensorLa
     });
   } catch (error) {
     console.error('ERROR uploading sensor layout:', error);
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
+    if (req.file && req.file.path) {
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'image');
+      }
     }
     res.status(500).json({
       success: false,
@@ -142,10 +143,10 @@ router.delete('/delete/sensor-layout/:projectId', protect, async (req, res) => {
       });
     }
 
-    // Delete file from filesystem
-    const filePath = path.join(__dirname, '..', project.sensorLayoutImage.filePath);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // Delete file from Cloudinary
+    const publicId = extractPublicId(project.sensorLayoutImage.filePath);
+    if (publicId) {
+      await deleteFromCloudinary(publicId, 'image');
     }
 
     project.sensorLayoutImage = undefined;
@@ -166,7 +167,7 @@ router.delete('/delete/sensor-layout/:projectId', protect, async (req, res) => {
 });
 
 // Upload mode shape video
-router.post('/upload/mode-shape/:projectId', protect, upload.single('modeShapeVideo'), async (req, res) => {
+router.post('/upload/mode-shape/:projectId', protect, modeShapeUpload.single('modeShapeVideo'), async (req, res) => {
   try {
     console.log('=== UPLOAD MODE SHAPE VIDEO REQUEST ===');
     console.log('Project ID:', req.params.projectId);
@@ -186,18 +187,23 @@ router.post('/upload/mode-shape/:projectId', protect, upload.single('modeShapeVi
     
     const project = await Project.findById(req.params.projectId);
     if (!project) {
-      fs.unlinkSync(req.file.path);
+      // Delete uploaded file from Cloudinary if project not found
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'video');
+      }
       return res.status(404).json({
         success: false,
         message: 'Project not found'
       });
     }
 
-    const filePath = `/uploads/media/${req.file.filename}`;
+    // Cloudinary URL is in req.file.path
+    const filePath = req.file.path;
     
     const videoData = {
       fileName: req.file.originalname,
-      filePath: filePath,
+      filePath: filePath, // This is now a Cloudinary URL
       title: title || `Mode Shape ${(project.modeShapeVideos?.length || 0) + 1}`,
       uploadDate: new Date(),
       uploadedBy: req.user.email,
@@ -218,8 +224,11 @@ router.post('/upload/mode-shape/:projectId', protect, upload.single('modeShapeVi
     });
   } catch (error) {
     console.error('Error uploading mode shape video:', error);
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
+    if (req.file && req.file.path) {
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'video');
+      }
     }
     res.status(500).json({
       success: false,
@@ -253,10 +262,10 @@ router.delete('/delete/mode-shape/:projectId/:videoId', protect, async (req, res
 
     const video = project.modeShapeVideos[videoIndex];
     
-    // Delete file from filesystem
-    const filePath = path.join(__dirname, '..', video.filePath);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // Delete file from Cloudinary
+    const publicId = extractPublicId(video.filePath);
+    if (publicId) {
+      await deleteFromCloudinary(publicId, 'video');
     }
 
     project.modeShapeVideos.splice(videoIndex, 1);

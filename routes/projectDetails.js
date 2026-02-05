@@ -1,46 +1,48 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import ProjectDetails from '../models/ProjectDetails.js';
 import Project from '../models/Project.js';
 import { protect, authorize } from '../middleware/auth.js';
+import { 
+  projectImageStorage, 
+  projectVideoStorage, 
+  deleteFromCloudinary, 
+  extractPublicId 
+} from '../config/cloudinary.js';
 
 const router = express.Router();
 
-// Get __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Configure multer for image/video uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const projectId = req.body.project_id || 'temp';
-    const uploadPath = path.join(__dirname, '../uploads', projectId, 'media');
-    
-    // Create directory if it doesn't exist
-    fs.mkdirSync(uploadPath, { recursive: true });
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit for images/videos
+// Configure multer for image uploads (using Cloudinary)
+const imageUpload = multer({
+  storage: projectImageStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit for images
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|mp4|webm|avi|mov/;
+    const allowedTypes = /jpeg|jpg|png|gif/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
 
     if (mimetype && extname) {
       return cb(null, true);
     } else {
-      cb(new Error('Only image and video files are allowed!'));
+      cb(new Error('Only image files are allowed!'));
+    }
+  }
+});
+
+// Configure multer for video uploads (using Cloudinary)
+const videoUpload = multer({
+  storage: projectVideoStorage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit for videos
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /mp4|webm|avi|mov/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only video files are allowed!'));
     }
   }
 });
@@ -194,7 +196,7 @@ router.post('/save', protect, authorize('admin'), async (req, res) => {
 });
 
 // Upload images (admin only)
-router.post('/upload-images', protect, authorize('admin'), upload.array('images', 10), async (req, res) => {
+router.post('/upload-images', protect, authorize('admin'), imageUpload.array('images', 10), async (req, res) => {
   try {
     const { project_id } = req.body;
 
@@ -205,9 +207,8 @@ router.post('/upload-images', protect, authorize('admin'), upload.array('images'
       });
     }
 
-    const imageUrls = req.files.map(file => 
-      `/uploads/${project_id}/media/${file.filename}`
-    );
+    // Cloudinary URLs are in req.files[].path
+    const imageUrls = req.files.map(file => file.path);
 
     // Update project details with new images
     const projectDetails = await ProjectDetails.findOne({ project_id });
@@ -234,6 +235,15 @@ router.post('/upload-images', protect, authorize('admin'), upload.array('images'
     });
   } catch (error) {
     console.error('Error uploading images:', error);
+    // Clean up uploaded files from Cloudinary if error occurs
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        const publicId = extractPublicId(file.path);
+        if (publicId) {
+          await deleteFromCloudinary(publicId, 'image');
+        }
+      }
+    }
     res.status(500).json({
       success: false,
       message: 'Error uploading images',
@@ -243,7 +253,7 @@ router.post('/upload-images', protect, authorize('admin'), upload.array('images'
 });
 
 // Upload video (admin only)
-router.post('/upload-video', protect, authorize('admin'), upload.single('video'), async (req, res) => {
+router.post('/upload-video', protect, authorize('admin'), videoUpload.single('video'), async (req, res) => {
   try {
     const { project_id } = req.body;
 
@@ -254,7 +264,8 @@ router.post('/upload-video', protect, authorize('admin'), upload.single('video')
       });
     }
 
-    const videoUrl = `/uploads/${project_id}/media/${req.file.filename}`;
+    // Cloudinary URL is in req.file.path
+    const videoUrl = req.file.path;
 
     // Update project details with new video
     const projectDetails = await ProjectDetails.findOne({ project_id });
@@ -281,6 +292,13 @@ router.post('/upload-video', protect, authorize('admin'), upload.single('video')
     });
   } catch (error) {
     console.error('Error uploading video:', error);
+    // Clean up uploaded file from Cloudinary if error occurs
+    if (req.file && req.file.path) {
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'video');
+      }
+    }
     res.status(500).json({
       success: false,
       message: 'Error uploading video',
@@ -316,10 +334,10 @@ router.delete('/delete-image', protect, authorize('admin'), async (req, res) => 
     );
     await projectDetails.save();
 
-    // Delete file from filesystem
-    const filePath = path.join(__dirname, '..', image_url);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // Delete file from Cloudinary
+    const publicId = extractPublicId(image_url);
+    if (publicId) {
+      await deleteFromCloudinary(publicId, 'image');
     }
 
     res.json({
@@ -363,10 +381,10 @@ router.delete('/delete-video', protect, authorize('admin'), async (req, res) => 
     );
     await projectDetails.save();
 
-    // Delete file from filesystem
-    const filePath = path.join(__dirname, '..', video_url);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // Delete file from Cloudinary
+    const publicId = extractPublicId(video_url);
+    if (publicId) {
+      await deleteFromCloudinary(publicId, 'video');
     }
 
     res.json({

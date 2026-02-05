@@ -1,32 +1,13 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import FinalReport from '../models/FinalReport.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { finalReportStorage, deleteFromCloudinary, extractPublicId } from '../config/cloudinary.js';
 
 const router = express.Router();
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads/final-reports');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'final-report-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
 const upload = multer({
-  storage: storage,
+  storage: finalReportStorage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = /pdf|doc|docx|xls|xlsx/;
@@ -62,13 +43,13 @@ router.post('/upload', upload.single('report'), async (req, res) => {
     // Check if a final report already exists for this project
     let existingReport = await FinalReport.findOne({ project_id });
 
-    const file_path = `/uploads/final-reports/${req.file.filename}`;
+    const file_path = req.file.path; // Cloudinary URL
 
     if (existingReport) {
-      // Delete old file if it exists
-      const oldFilePath = path.join(__dirname, '..', existingReport.file_path);
-      if (fs.existsSync(oldFilePath)) {
-        fs.unlinkSync(oldFilePath);
+      // Delete old file from Cloudinary if it exists
+      const publicId = extractPublicId(existingReport.file_path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'raw');
       }
 
       // Update existing report
@@ -103,6 +84,13 @@ router.post('/upload', upload.single('report'), async (req, res) => {
     }
   } catch (error) {
     console.error('Error uploading final report:', error);
+    // Clean up uploaded file from Cloudinary if error occurs
+    if (req.file && req.file.path) {
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'raw');
+      }
+    }
     res.status(500).json({
       success: false,
       message: 'Error uploading final report',
@@ -154,10 +142,10 @@ router.delete('/:projectId', async (req, res) => {
       });
     }
 
-    // Delete file from filesystem
-    const filePath = path.join(__dirname, '..', report.file_path);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // Delete file from Cloudinary
+    const publicId = extractPublicId(report.file_path);
+    if (publicId) {
+      await deleteFromCloudinary(publicId, 'raw');
     }
 
     // Delete from database

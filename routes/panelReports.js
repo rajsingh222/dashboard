@@ -1,33 +1,10 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import PanelReport from '../models/PanelReport.js';
+import { panelReportStorage, deleteFromCloudinary, extractPublicId } from '../config/cloudinary.js';
 
 const router = express.Router();
-
-// Get __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Create uploads directory if it doesn't exist
-const uploadDir = path.join(__dirname, '../../public/uploads/reports');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, `${req.body.project_id}_${req.body.panel_type}_${uniqueSuffix}${ext}`);
-  }
-});
 
 // File filter - only allow specific file types
 const fileFilter = (req, file, cb) => {
@@ -47,7 +24,7 @@ const fileFilter = (req, file, cb) => {
 };
 
 const upload = multer({
-  storage: storage,
+  storage: panelReportStorage,
   fileFilter: fileFilter,
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB limit
@@ -92,7 +69,7 @@ router.post('/upload', upload.single('report'), async (req, res) => {
       panel_type,
       filename: req.file.filename,
       original_filename: req.file.originalname,
-      file_path: `/uploads/reports/${req.file.filename}`,
+      file_path: req.file.path, // Cloudinary URL
       file_size: req.file.size,
       mime_type: req.file.mimetype,
       uploaded_by: uploaded_by || 'unknown'
@@ -106,18 +83,19 @@ router.post('/upload', upload.single('report'), async (req, res) => {
       data: {
         filename: req.file.filename,
         original_filename: req.file.originalname,
-        file_path: `/uploads/reports/${req.file.filename}`
+        file_path: req.file.path
       }
     });
 
   } catch (error) {
     console.error('Error uploading report:', error);
     
-    // Delete uploaded file if database save fails
+    // Delete uploaded file from Cloudinary if database save fails
     if (req.file && req.file.path) {
-      fs.unlink(req.file.path, (err) => {
-        if (err) console.error('Error deleting file:', err);
-      });
+      const publicId = extractPublicId(req.file.path);
+      if (publicId) {
+        await deleteFromCloudinary(publicId, 'raw');
+      }
     }
 
     res.status(500).json({
@@ -209,20 +187,14 @@ router.delete('/delete/:id', async (req, res) => {
 
     console.log('[Delete Report] Found report:', report);
 
-    // Delete file from filesystem
-    const filePath = path.join(__dirname, '../../public', report.file_path);
-    console.log('[Delete Report] Attempting to delete file at:', filePath);
-    
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.unlinkSync(filePath);
-        console.log('[Delete Report] File deleted successfully');
-      } catch (fsError) {
-        console.error('[Delete Report] Error deleting file:', fsError);
-        // Continue even if file deletion fails
-      }
+    // Delete file from Cloudinary
+    const publicId = extractPublicId(report.file_path);
+    if (publicId) {
+      console.log('[Delete Report] Deleting from Cloudinary with public ID:', publicId);
+      await deleteFromCloudinary(publicId, 'raw');
+      console.log('[Delete Report] File deleted successfully from Cloudinary');
     } else {
-      console.log('[Delete Report] File not found at path:', filePath);
+      console.log('[Delete Report] No public ID found in file path:', report.file_path);
     }
 
     // Delete from database
