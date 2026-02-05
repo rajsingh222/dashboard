@@ -1,0 +1,15 @@
+# Render Deployment Configuration
+# https://render.com
+
+# Build Command: npm install
+# Start Command: npm start
+
+# Environment Variables to set in Render Dashboard:
+# - NODE_ENV=production
+# - PORT=5000 (Render will override this automatically)
+# - MONGODB_URI=<your_mongodb_atlas_uri>
+# - JWT_SECRET=<your_strong_secret_key>
+# - FRONTEND_URL=https://yourdomain.com
+# - ADMIN_FRONTEND_URL=https://yourdomain.com/admin
+
+# Auto-Deploy: Enable from main branch
