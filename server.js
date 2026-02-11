@@ -34,6 +34,9 @@ import mediaAssetsRoutes from './routes/mediaAssets.js';
 
 const app = express();
 
+// Trust proxy - required for rate limiting behind reverse proxies (Render, Nginx, etc.)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 
