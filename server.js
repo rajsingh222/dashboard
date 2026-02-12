@@ -7,6 +7,7 @@ import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import mongoose from 'mongoose';
 import connectDB from './config/database.js';
 import { errorHandler, notFound } from './middleware/error.js';
 
@@ -150,12 +151,16 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check
+// Health check - optimized for Render monitoring
 app.get('/health', (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  
   res.status(200).json({
     success: true,
     message: 'Server is running',
     timestamp: new Date().toISOString(),
+    database: dbStatus,
+    uptime: Math.floor(process.uptime()),
   });
 });
 

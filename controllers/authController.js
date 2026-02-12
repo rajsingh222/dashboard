@@ -1,4 +1,5 @@
 import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
 import { generateToken, generateRefreshToken, verifyRefreshToken } from '../utils/tokenUtils.js';
 
 // @desc    Register new user
@@ -113,26 +114,21 @@ export const login = async (req, res) => {
       });
     }
 
-    // Check for user (include password field)
-    const user = await User.findOne({ email }).select('+password');
+    // Check for user (include password field) - optimized query
+    const user = await User.findOne({ 
+      email,
+      isActive: true // Check active status in query for better performance
+    }).select('+password').lean({ virtuals: false });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials',
+        message: 'Invalid credentials', // Generic message for security
       });
     }
 
-    // Check if user is active
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Account is deactivated. Please contact administrator.',
-      });
-    }
-
-    // Check password
-    const isPasswordMatch = await user.comparePassword(password);
+    // Check password using bcrypt directly (since we used lean())
+    const isPasswordMatch = await bcrypt.compare(password, user.password);
 
     if (!isPasswordMatch) {
       return res.status(401).json({
@@ -141,16 +137,20 @@ export const login = async (req, res) => {
       });
     }
 
-    // Update last login
-    user.lastLogin = new Date();
-
     // Generate tokens
     const token = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // Save refresh token
-    user.refreshToken = refreshToken;
-    await user.save();
+    // Update last login and refresh token in one query (more efficient)
+    await User.updateOne(
+      { _id: user._id },
+      { 
+        $set: { 
+          lastLogin: new Date(),
+          refreshToken: refreshToken
+        }
+      }
+    );
 
     res.status(200).json({
       success: true,
