@@ -136,6 +136,7 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       health: '/health',
+      uptime: '/uptime',
       auth: '/api/auth',
       projects: '/api/projects',
       sensors: '/api/sensors',
@@ -161,6 +162,15 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     database: dbStatus,
     uptime: Math.floor(process.uptime()),
+  });
+});
+
+// Lightweight uptime endpoint for external pingers (UptimeRobot, etc.)
+app.get('/uptime', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'OK',
+    timestamp: new Date().toISOString(),
   });
 });
 
